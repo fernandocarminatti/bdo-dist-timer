@@ -19,12 +19,12 @@ class NetworkHandler(QObject):
         self.is_running = False
         self.socket_lock = threading.Lock()
 
-    def connect(self, host, port, party, password):
+    def connect(self, host, port, party, password, username):
         self.is_running = True
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((host, port))
-            self.send(f"JOIN:{party}:{password}\n")
+            self.send(f"JOIN:{party}:{password}:{username}\n")
             threading.Thread(target=self.listen, daemon=True).start()
             self.connection_status.emit(True)
         except Exception as e:
@@ -81,6 +81,7 @@ class ClientApp(QWidget):
         self.setWindowTitle('Olun Sync')
         layout = QVBoxLayout()
 
+        self.username_input = QLineEdit("Username")
         self.ip_input = QLineEdit("127.0.0.1")
         self.port_input = QLineEdit("8888")
         self.party_input = QLineEdit("secretolunparty")
@@ -97,6 +98,8 @@ class ClientApp(QWidget):
         self.status_log = QTextEdit()
         self.status_log.setReadOnly(True)
 
+        layout.addWidget(QLabel("Username:"))
+        layout.addWidget(self.username_input)
         layout.addWidget(QLabel("Server IP:"))
         layout.addWidget(self.ip_input)
         layout.addWidget(QLabel("Port:"))
@@ -130,11 +133,12 @@ class ClientApp(QWidget):
             self.network.disconnect()
         else:
             self.connect_button.setText("Connecting...")
+            username = self.username_input.text()
             host = self.ip_input.text()
             port = int(self.port_input.text())
             party = self.party_input.text()
             password = self.password_input.text()
-            self.network.connect(host, port, party, password)
+            self.network.connect(host, port, party, password, username)
 
     def log_status(self, text):
         self.status_log.append(text)
@@ -142,7 +146,7 @@ class ClientApp(QWidget):
     def update_connection_status(self, is_connected):
         self.ping_button.setEnabled(is_connected)
         self.connect_button.setText("Disconnect" if is_connected else "Connect")
-        for widget in [self.ip_input, self.port_input, self.party_input, self.password_input]:
+        for widget in [self.username_input, self.ip_input, self.port_input, self.party_input, self.password_input]:
             widget.setEnabled(not is_connected)
         if not is_connected:
             self.is_leader = False
