@@ -91,10 +91,6 @@ class ClientApp(QWidget):
         self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.toggle_connection)
 
-        self.ping_button = QPushButton("Test (Ping Server)")
-        self.ping_button.clicked.connect(lambda: self.network.send("PING\n"))
-        self.ping_button.setEnabled(False)
-
         self.status_log = QTextEdit()
         self.status_log.setReadOnly(True)
 
@@ -109,7 +105,6 @@ class ClientApp(QWidget):
         layout.addWidget(QLabel("Password:"))
         layout.addWidget(self.password_input)
         layout.addWidget(self.connect_button)
-        layout.addWidget(self.ping_button)
         layout.addWidget(QLabel("Status Log:"))
         layout.addWidget(self.status_log)
         self.setLayout(layout)
@@ -144,7 +139,6 @@ class ClientApp(QWidget):
         self.status_log.append(text)
 
     def update_connection_status(self, is_connected):
-        self.ping_button.setEnabled(is_connected)
         self.connect_button.setText("Disconnect" if is_connected else "Connect")
         for widget in [self.username_input, self.ip_input, self.port_input, self.party_input, self.password_input]:
             widget.setEnabled(not is_connected)
@@ -155,16 +149,16 @@ class ClientApp(QWidget):
     def handle_server_message(self, msg):
         if msg == "JOIN_OK":
             self.log_status("Successfully joined party!")
-        elif msg.startswith("NEW_MEMBER:"):
+        elif msg.startswith("UPDATE_PARTY:"):
             _, members_str = msg.split(":", 1)
-            members = members_str.split(',')
-            my_ip = self.network.sock.getsockname()[0]
-            if members and (members[0] == my_ip or members[0] == '127.0.0.1'):
-                self.is_leader = True
-                self.log_status("You are the party leader!")
+            members = members_str.split(',') if members_str else []
+            if not members:
+                self.log_status("Party is now empty.")
             else:
-                self.is_leader = False
-                self.log_status("You are a party member.")
+                formatted_members = [f"{m} (Leader)" if i == 0 else m for i, m in enumerate(members)]
+                log_header = f"Party Update: Members ({len(members)}):"
+                log_body = f", ".join(formatted_members)
+                self.log_status(f"{log_header}\n{log_body}")
         elif msg == "PLAY_SOUND":
             self.log_status("!!! RECEIVED PLAY COMMAND. Z-BUFF NOW. !!!")
             self.alarm_sound.play()
