@@ -55,18 +55,12 @@ class NetworkHandler(QObject):
     def disconnect(self):
         if not self.is_running:
             return
-        
-        self.is_running = False
         if self.socket_lock:
             if self.sock:
-                try:
-                    self.sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-            self.sock.close()
-            self.sock = None
-        self.connection_status.emit(False)
-
+                try: self.sock.shutdown(socket.SHUT_RDWR)
+                except OSError: pass
+                self.sock.close()
+                self.sock = None
 
 class ClientApp(QWidget):
     def __init__(self):
