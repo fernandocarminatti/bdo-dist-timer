@@ -17,6 +17,7 @@ class NetworkHandler(QObject):
         super().__init__()
         self.sock = None
         self.is_running = False
+        self.socket_lock = threading.Lock()
 
     def connect(self, host, port, party, password):
         self.is_running = True
@@ -31,28 +32,40 @@ class NetworkHandler(QObject):
             self.connection_status.emit(False)
 
     def listen(self):
-        f = self.sock.makefile()
-        while self.is_running:
-            try:
-                message = f.readline().strip()
-                if message:
+        try:
+            f = self.sock.makefile()
+            while self.is_running:
+                try:
+                    message = f.readline().strip()
+                    if not message:
+                        break
                     self.message_received.emit(message)
-                else:
-                    break
-            except Exception:
-                break
-        self.is_running = False
-        self.connection_status.emit(False)
-        self.message_received.emit("Disconnected from server.")
+                except (OSError, ConnectionAbortedError, ConnectionResetError):
+                    self.message_received.emit("Connection closed by client exception.")
+                except Exception as e:
+                    self.message_received.emit(f"Network error: {e}")
+        finally:
+            self.is_running = False
+            self.connection_status.emit(False)
 
     def send(self, message):
         if self.sock and self.is_running:
             self.sock.sendall(message.encode())
 
     def disconnect(self):
+        if not self.is_running:
+            return
+        
         self.is_running = False
-        if self.sock:
+        if self.socket_lock:
+            if self.sock:
+                try:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
             self.sock.close()
+            self.sock = None
+        self.connection_status.emit(False)
 
 
 class ClientApp(QWidget):
@@ -71,7 +84,7 @@ class ClientApp(QWidget):
         self.init_hotkey()
 
     def init_ui(self):
-        self.setWindowTitle('Synchronized Timer Client')
+        self.setWindowTitle('Olun Sync')
         layout = QVBoxLayout()
 
         self.ip_input = QLineEdit("127.0.0.1")
@@ -106,8 +119,8 @@ class ClientApp(QWidget):
 
     def init_hotkey(self):
         try:
-            keyboard.add_hotkey('ctrl+shift+s', self.trigger_start_by_hotkey)
-            self.log_status("Hotkey 'Ctrl+Shift+S' registered to start timer.")
+            keyboard.add_hotkey('page down', self.trigger_start_by_hotkey)
+            self.log_status("Hotkey 'page down' registered to start timer.")
         except Exception as e:
             self.log_status(f"Warning: Could not register hotkey. May need admin rights. {e}")
 
@@ -122,6 +135,7 @@ class ClientApp(QWidget):
         if self.network.is_running:
             self.network.disconnect()
         else:
+            self.connect_button.setText("Connecting...")
             host = self.ip_input.text()
             port = int(self.port_input.text())
             party = self.party_input.text()
@@ -138,12 +152,12 @@ class ClientApp(QWidget):
             widget.setEnabled(not is_connected)
         if not is_connected:
             self.is_leader = False
+            self.log_status("Disconnected.")
 
     def handle_server_message(self, msg):
-        self.log_status(f"Server: {msg}")
         if msg == "JOIN_OK":
             self.log_status("Successfully joined party!")
-        elif msg.startswith("UPDATE_PARTY:"):
+        elif msg.startswith("NEW_MEMBER:"):
             _, members_str = msg.split(":", 1)
             members = members_str.split(',')
             my_ip = self.network.sock.getsockname()[0]
