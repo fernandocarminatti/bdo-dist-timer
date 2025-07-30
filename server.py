@@ -3,7 +3,7 @@ import time
 
 HOST = '0.0.0.0'
 PORT = 8888
-COUNTDOWN_SECONDS = 275
+COUNTDOWN_SECONDS = 5
 
 parties = {}
 
@@ -17,7 +17,7 @@ class Party:
 
     async def broadcast(self, message, exclude_writer=None):
         """Sends a message to all members of the party."""
-        print(f"[PARTY: {self.name}] Broadcasting: {message}")
+        print(f"[PARTY: {self.name}] - {message}")
         for reader, writer, _ in self.members:
             if writer is not exclude_writer:
                 try:
@@ -79,7 +79,7 @@ async def handle_client(reader, writer):
         await writer.drain()
 
         member_list = ",".join([uname for r, w, uname in party.members])
-        await party.broadcast(f"MEMBERS: {member_list}\n")
+        await party.broadcast(f"UPDATE_PARTY: {member_list}\n")
 
         while True:
             data = await reader.readline()
@@ -89,11 +89,7 @@ async def handle_client(reader, writer):
             command = data.decode().strip()
             print(f"Received from {addr}: {command}")
 
-            if command == "PING":
-                writer.write("PONG\n".encode())
-                await writer.drain()
-            
-            elif command == "START" and writer == party.leader:
+            if command == "START" and writer == party.leader:
                 if party.timer_task and not party.timer_task.done():
                     print(f"Party '{party.name}' timer is already running.")
                     writer.write("SERVER_MSG: Timer is already active.\n".encode())
@@ -118,13 +114,12 @@ async def handle_client(reader, writer):
                 new_leader_username = current_party.members[0][2]
                 current_party.leader = new_leader_writer
                 await current_party.broadcast(f"SERVER_MSG: Leader has left. New leader is {new_leader_username}@{new_leader_writer.get_extra_info('peername')[0]}\n")
-
             member_list = ",".join([uname for r, w, uname in current_party.members])
-            await current_party.broadcast(f"MEMBERS: {member_list}\n")
+            await current_party.broadcast(f"UPDATE_PARTY: {member_list}\n")
             
-            if not current_party:
-                print(f"Party '{current_party.name}' is now empty. Deleting.")
-                del parties[current_party.name]
+        if not current_party.members:
+            print(f"Party '{current_party.name}' is now empty. Deleting.")
+            del parties[current_party.name]
 
         writer.close()
         await writer.wait_closed()
