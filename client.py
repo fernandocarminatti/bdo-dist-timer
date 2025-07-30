@@ -116,6 +116,9 @@ class ClientApp(QWidget):
         self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.toggle_connection)
 
+        self.send_event_button = QPushButton("Send Event")
+        self.send_event_button.clicked.connect(self.trigger_start_by_hotkey)
+
         self.status_log = QTextEdit()
         self.status_log.setReadOnly(True)
 
@@ -130,6 +133,7 @@ class ClientApp(QWidget):
         layout.addWidget(QLabel("Password:"))
         layout.addWidget(self.password_input)
         layout.addWidget(self.connect_button)
+        layout.addWidget(self.send_event_button)
         layout.addWidget(QLabel("Status Log:"))
         layout.addWidget(self.status_log)
         self.setLayout(layout)
@@ -159,6 +163,10 @@ class ClientApp(QWidget):
             self.log_status("Z-Buff now!")
             if self.alarm_sound:
                 self.alarm_sound.play()
+        elif command == "TIMER_ALREADY_ACTIVE":
+            self.log_status("Timer is already active!")
+        elif command == "NOT_LEADER":
+            self.log_status("You are not the party leader!")
 
     def _parse_party_update(self, payload):
         """Parse party updates"""

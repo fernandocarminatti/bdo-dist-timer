@@ -28,10 +28,10 @@ class Party:
         if self.get_member_by_writer(writer):
             return
         self.members.append((reader, writer, username))
-        print(f"User '{username}' joined party '{self.name}'.")
+        print(f"[INFO]: '{username}' joined party '{self.name}'.")
         if self.leader_writer is None:
             self.leader_writer = writer
-            print(f"User '{username}' is the new leader of party '{self.name}'.")
+            print(f"[INFO]: '{username}' is the new leader of party '{self.name}'.")
         await self._broadcast_party_update()
     
     async def remove_member(self, writer):
@@ -42,16 +42,14 @@ class Party:
         
         leaving_username = member_to_remove[2]
         self.members.remove(member_to_remove)
-        print(f"User '{leaving_username}' left party '{self.name}'.")
+        print(f"[INFO]: '{leaving_username}' left party '{self.name}'.")
 
         # Promote leader?!
         if self.leader_writer is writer:
             if self.members:
                 self.leader_writer = self.members[0][1]
-                new_leader_username = self.members[0][2]
-                await self.broadcast(f"SERVER: Leader '{leaving_username}' has left. New leader is '{new_leader_username}'")
             else:
-                # empty here
+                # empty party here
                 self.leader_writer = None
         await self._broadcast_party_update()
         return not self.members
@@ -71,20 +69,20 @@ class Party:
         """Helper to handle party update broadcasts."""
         member_list = self.get_member_list()
         message = f"PARTY_UPDATE:{','.join(member_list)}\n"
-        print(f"[PARTY: {self.name}] Broadcasting Update: {message.strip()}")
+        print(f"[PARTY - {self.name}]: Broadcasting Update: {message.strip()}")
         await self.broadcast(message)
 
     async def start_countdown(self):
         """Timer and broadcast events from countdown."""
-        print(f"[PARTY: {self.name}] Starting countdown.")
+        print(f"[PARTY - {self.name}]: Starting countdown.")
         await self.broadcast("COUNTDOWN\n")
         await asyncio.sleep(COUNTDOWN_SECONDS)
-        print(f"[PARTY: {self.name}] Countdown complete. Playing sound.")
+        print(f"[PARTY - {self.name}]: Countdown complete. Playing sound.")
         await self.broadcast("PLAY_SOUND\n")
 
 async def handle_client(reader, writer):
     addr = writer.get_extra_info('peername')
-    print(f"New conn: {addr}")
+    print(f"[INFO]: New conn - {addr}")
     
     party = None
     
@@ -94,6 +92,7 @@ async def handle_client(reader, writer):
         
         message = data.decode().strip()
         if not message.startswith("JOIN:"):
+            print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': INVALID_COMMAND")
             writer.write("JOIN_FAIL: Invalid command. Use JOIN:party:pass:user\n".encode())
             await writer.drain()
             return
@@ -101,17 +100,19 @@ async def handle_client(reader, writer):
         try:
             _, party_name, password, username = message.split(":", 3)
         except ValueError:
+            print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': INVALID_JOIN_FORMAT")
             writer.write("JOIN_FAIL: Invalid JOIN format. Use JOIN:party:pass:user\n").encode()
             await writer.drain()
             return
         
         if party_name not in parties:
             parties[party_name] = Party(party_name, password)
-            print(f"Created new party: {party_name}")
+            print(f"[INFO]: New party created: {party_name}")
 
         party = parties[party_name]
 
         if party.password != password:
+            print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': INCORRECT_PASSWORD")
             writer.write("JOIN_FAIL: Incorrect password.\n".encode())
             await writer.drain()
             party = None
@@ -127,17 +128,20 @@ async def handle_client(reader, writer):
             if not data: break
                 
             command = data.decode().strip()
-            print(f"Received from '{username}' in '{party_name}': '{command}'")
+            print(f"[INFO]: '{username}' in '{party_name}': '{command}'")
 
             if command == "START":
                 if party.leader_writer is writer:
                     if party.timer_task and not party.timer_task.done():
-                        writer.write("SERVER: Timer is already active.\n".encode())
+                        print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': TIMER_ALREADY_ACTIVE")
+                        writer.write("TIMER_ALREADY_ACTIVE: Timer is already active.\n".encode())
                         await writer.drain()
                     else:
+                        print(f"[INFO]: '{command}' - '{username}' in '{party_name}': TIMER_STARTED")
                         party.timer_task = asyncio.create_task(party.start_countdown())
                 else:
-                    writer.write("SERVER: Only party leader can start the timer.\n".encode())
+                    print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': NOT_LEADER")
+                    writer.write("NOT_LEADER: Only party leader can start the timer.\n".encode())
                     await writer.drain()
     except (ConnectionResetError, asyncio.IncompleteReadError):
         pass # Client disconnect unexpectedly. Finally handles cleanup.
