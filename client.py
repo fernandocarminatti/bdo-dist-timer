@@ -117,11 +117,7 @@ class ClientApp(QWidget):
             self.log_status(f"Warning: Could not register hotkey. May need admin rights. {e}")
 
     def trigger_start_by_hotkey(self):
-        if self.is_leader:
-            self.log_status("Hotkey triggered! Sending START command as leader.")
-            self.network.send("START\n")
-        else:
-            self.log_status("Hotkey triggered, but you are not the leader.")
+        self.network.send("START\n")
 
     def toggle_connection(self):
         if self.network.is_running:
@@ -149,7 +145,7 @@ class ClientApp(QWidget):
     def handle_server_message(self, msg):
         if msg == "JOIN_OK":
             self.log_status("Successfully joined party!")
-        elif msg.startswith("UPDATE_PARTY:"):
+        elif msg.startswith("PARTY_UPDATE:"):
             _, members_str = msg.split(":", 1)
             members = members_str.split(',') if members_str else []
             if not members:
@@ -159,8 +155,10 @@ class ClientApp(QWidget):
                 log_header = f"Party Update: Members ({len(members)}):"
                 log_body = f", ".join(formatted_members)
                 self.log_status(f"{log_header}\n{log_body}")
+        elif msg == "COUNTDOWN":
+            self.log_status("Leader has started the countdown!")
         elif msg == "PLAY_SOUND":
-            self.log_status("!!! RECEIVED PLAY COMMAND. Z-BUFF NOW. !!!")
+            self.log_status("Z-Buff now!")
             self.alarm_sound.play()
             
     def closeEvent(self, event):
