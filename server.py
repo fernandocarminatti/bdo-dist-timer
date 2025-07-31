@@ -118,8 +118,8 @@ class Server:
                 party = None
                 return
             
-            await party.add_member(websocket, username)
             await websocket.send("JOIN_OK")
+            await party.add_member(websocket, username)
 
             # Main command loop
             async for command in websocket:
