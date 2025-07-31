@@ -156,32 +156,39 @@ class ClientApp(QWidget):
         command = parts[0]
         payload = parts[1] if len(parts) > 1 else ""
 
-        if command == "JOIN_OK":
-            self.log_status("Successfully joined party!")
-        elif command == "PARTY_UPDATE":
-            self._parse_party_update(payload)
-        elif command == "COUNTDOWN":
-            self.log_status("Leader has started the countdown!")
-        elif command == "PLAY_SOUND":
-            self.log_status("Z-Buff now!")
-            if self.alarm_sound:
-                self.alarm_sound.play()
-        elif command == "TIMER_ALREADY_ACTIVE":
-            self.log_status("Timer is already active!")
-        elif command == "NOT_LEADER":
-            self.log_status("You are not the party leader!")
-
+        match command:
+            case "JOIN_OK":
+                self.log_status("Successfully joined party!")
+            case "PARTY_UPDATE":
+                self._parse_party_update(payload)
+            case "COUNTDOWN":
+                self.log_status("Leader has started the countdown!")
+            case "PLAY_SOUND":
+                self.log_status("Z-Buff now!")
+                if self.alarm_sound:
+                    self.alarm_sound.play()
+            case "TIMER_ALREADY_ACTIVE":
+                self.log_status("Timer is already active!")
+            case "NOT_LEADER":
+                self.log_status("You are not the party leader!")
+            case "INVALID_COMMAND":
+                self.log_status("Invalid command. Use JOIN:party:pass:user")
+            case "INVALID_JOIN_FORMAT":
+                self.log_status("Invalid JOIN format. Use JOIN:party:pass:user")
+            case "INCORRECT_PASSWORD":
+                self.log_status("Incorrect password.")
+        
     def _parse_party_update(self, payload):
         """Parse party updates"""
-        self.party_members = payload.split(',') if payload else []
+        active_party, *self.party_members = payload.split(':')
         my_username = self.username_input.text()
         self.is_leader = bool(self.party_members and self.party_members[0] == my_username)
 
         if not self.party_members:
             self.log_status("Party is now empty.")
         else:
-            formatted = [f"{m} (Leader)" if i == 0 else m for i, m in enumerate(self.party_members)]
-            self.log_status(f"Party Update ({len(self.party_members)}): {', '.join(formatted)}")
+            output_message = f"[{active_party}]({len(self.party_members)}): {', '.join(self.party_members)}"
+            self.log_status(output_message)
             self._update_ui_state()
 
     def _update_ui_state(self):
