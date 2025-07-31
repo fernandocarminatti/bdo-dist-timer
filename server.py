@@ -1,8 +1,7 @@
 import asyncio
+import argparse
 import time
 
-HOST = '0.0.0.0'
-PORT = 8888
 COUNTDOWN_SECONDS = 2
 
 parties = {}
@@ -39,7 +38,8 @@ class Party:
         member_to_remove = self.get_member_by_writer(writer)
         if not member_to_remove:
             return # not found?!?
-        
+        HOST = '0.0.0.0'
+
         leaving_username = member_to_remove[2]
         self.members.remove(member_to_remove)
         print(f"[INFO]: '{leaving_username}' left party '{self.name}'.")
@@ -158,8 +158,13 @@ async def handle_client(reader, writer):
 
 
 async def main():
-    server = await asyncio.start_server(handle_client, HOST, PORT)
-    print(f"[DEBUG]: Server at {HOST}:{PORT}")
+    parser = argparse.ArgumentParser(description="BDO Dist Timer Server")
+    parser.add_argument("--port", type=int, default=8888, help="Server port")
+    parser.add_argument("--host", default="0.0.0.0", help="Server IP")
+    args = parser.parse_args()
+    
+    server = await asyncio.start_server(handle_client, args.host, args.port)
+    print(f"[DEBUG]: Server at {args.host}:{args.port}")
     async with server:
         await server.serve_forever()
 
