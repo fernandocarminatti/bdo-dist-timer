@@ -149,17 +149,17 @@ async def handle_client(reader, writer):
         if party:
             is_empty = await party.remove_member(writer)
             if is_empty:
-                print(f"Party '{party.name}' is now empty. Deleting.")
+                print(f"[INFO]: Party '{party.name}' is now empty. Deleting.")
                 if party.name in parties:
                     del parties[party.name]
         writer.close()
         await writer.wait_closed()
-        print(f"Connection with {username}@{addr} closed.")
+        print(f"[INFO]: Closed conn - {username}@{addr}.")
 
 
 async def main():
     server = await asyncio.start_server(handle_client, HOST, PORT)
-    print(f"Server started on {HOST}:{PORT}")
+    print(f"[DEBUG]: Server at {HOST}:{PORT}")
     async with server:
         await server.serve_forever()
 
