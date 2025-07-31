@@ -1,11 +1,12 @@
 import sys
-import socket
+import asyncio
 import threading
 import time
 from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QVBoxLayout, QLineEdit, QTextEdit
 from PyQt6.QtCore import pyqtSignal, QObject
 import pygame
 import keyboard
+import websockets
 
 SOUND_FILE = "zbuff01.wav"
 
@@ -15,61 +16,63 @@ class NetworkHandler(QObject):
 
     def __init__(self):
         super().__init__()
-        self.sock = None
-        self.socket_lock = threading.Lock()
+        self.websocket = None
+        self.is_running = False
+        self.uri = ""
 
-    @property
-    def is_running(self):
-        """ Computed property for conn status. Socket is the source of truth"""
-        return self.sock is not None
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.run_async_loop, daemon=True)
+        self.thread.start()
+
+    def run_async_loop(self):
+        """Runs the async loop in a thread."""
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
 
     def connect(self, host, port, party, password, username):
         if self.is_running:
             return
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((host, port))
-            
-            with self.socket_lock:
-                self.sock = sock
+        self.uri = f"ws://{host}:{port}"
 
-            self.send(f"JOIN:{party}:{password}:{username}\n")
-            threading.Thread(target=self._listen, daemon=True).start()
-            self.connection_status.emit(True, "Connected successfully.")
+        asyncio.run_coroutine_threadsafe(
+            self._connect(party, password, username),
+            self.loop
+        )
+
+    async def _connect(self, party, password, username):
+        try:
+            async with websockets.connect(self.uri) as websocket:
+                self.websocket = websocket
+                self.is_running = True
+                self.connection_status.emit(True, "Connected successfully.")
+
+                await self.websocket.send(f"JOIN:{party}:{password}:{username}")
+
+                async for message in self.websocket:
+                    self.message_received.emit(message)
+
+        except (websockets.exceptions.ConnectionClose, ConnectionRefusedError) as e:
+            self.connection_status.emit(False, f"Connection closed: {e}")
         except Exception as e:
-            self.sock = None
             self.connection_status.emit(False, f"Connection error: {e}")
-
-    def _listen(self):
-        error_msg = "Connection lost."
-        try:
-            with self.sock.makefile('r') as f:
-                for message in f:
-                    self.message_received.emit(message.strip())
-        except (OSError, ConnectionAbortedError, ConnectionResetError):
-            error_msg = f"Connection closed: {e}"
-        except Exception as e:
-            error_msg = f"Network error: {e}"
         finally:
-            with self.socket_lock:
-                self.sock = None
-            self.connection_status.emit(False, error_msg)
+            self.is_running = False
+            self.websocket = None
+            self.connection_status.emit(False, "Disconnected.")
 
     def send(self, message):
-        with self.socket_lock:
-            if self.is_running:
-                try:
-                    self.sock.sendall(message.encode())
-                except OSError:
-                    pass # Thread should capture this and handle the disconnect.
+        if self.is_running and self.websocket:
+            asyncio.run_coroutine_threadsafe(
+                self.websocket.send(message),
+                self.loop
+            )
 
     def disconnect(self):
-        with self.socket_lock:
-            if self.is_running:
-                try:
-                    self.sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass # _listen() finally should handle cleanup.
+        if self.is_running and self.websocket:
+            asyncio.run_coroutine_threadsafe(
+                self.websocket.close(),
+                self.loop
+            )
 
 class ClientApp(QWidget):
     def __init__(self):
@@ -196,7 +199,7 @@ class ClientApp(QWidget):
 
     def trigger_start_by_hotkey(self):
         if self.is_connected:
-            self.network.send("START\n")
+            self.network.send("START")
 
     def toggle_connection(self):
         """Handles connnect/disconnect button"""
