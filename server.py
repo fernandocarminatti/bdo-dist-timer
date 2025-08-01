@@ -26,10 +26,10 @@ class Party:
         """Adds new member and broadcasts event."""
         if self.get_member_by_websocket(websocket): return
         self.members.append((websocket, username))
-        logging.info(f"'{username}' joined party '{self.name}'.")
+        logging.info(f"[{self.name}]: JOIN_PARTY_OK - '{username}'")
         if self.leader_websocket is None:
             self.leader_websocket = websocket
-            logging.info(f"'{username}' is the new leader of party '{self.name}'.")
+            logging.info(f"[{self.name}]: LEADER_PROMOTION - '{username}'")
         await self._broadcast_party_update()
     
     async def remove_member(self, websocket):
@@ -40,14 +40,14 @@ class Party:
 
         leaving_username = member_to_remove[1]
         self.members.remove(member_to_remove)
-        logging.info(f"'{leaving_username}' left party '{self.name}'.")
+        logging.info(f"[{self.name}]: '{leaving_username}' left.")
 
         # Promote leader?!
         if self.leader_websocket is websocket:
             if self.members:
                 self.leader_websocket = self.members[0][0]
                 new_leader_username = self.members[0][1]
-                logging.info(f"'{new_leader_username}' is the new leader of party '{self.name}'.")
+                logging.info(f"[{self.name}]: LEADER_PROMOTION - '{new_leader_username}'")
             else:
                 # empty party here
                 self.leader_websocket = None
@@ -64,7 +64,7 @@ class Party:
         """Helper to handle party update broadcasts."""
         member_list = self.get_member_list()
         message = f"PARTY_UPDATE:{self.name}:{':'.join(member_list)}"  
-        logging.info(f"[{self.name}]: PARTY_UPDATE: {", ".join(member_list)}")
+        logging.info(f"[{self.name}]: PARTY_UPDATE - {", ".join(member_list)}")
         await self.broadcast(message)
 
     async def start_countdown(self):
@@ -86,7 +86,7 @@ class Server:
     async def handle_client(self, websocket):
         """Client connection Lifecycle"""
         addr = websocket.remote_address
-        logging.info(f"New conn - {addr}")
+        logging.info(f"[NEW_CONN] - {addr}")
         party, username = None, None
 
         try:
@@ -95,22 +95,22 @@ class Server:
                 return # On join fail, should already have responded.
             await self._process_commands(websocket, party, username)
         except websockets.exceptions.ConnectionClosed:
-            logging.error(f"ConnectionClosed - {username}@{addr}.")
+            logging.error(f"[CONNECTION_CLOSED] - {username}@{addr}.")
         except Exception as e:
-            logging.error(f"Unexpected error for {username}@{addr}: {e}")
+            logging.error(f"[UNEXPECTED_ERROR] - {username}@{addr}: {e}")
         finally:
             if party and websocket:
                 if await party.remove_member(websocket):
-                    logging.info(f"Party '{party.name}' is now empty. Deleting.")
+                    logging.info(f"[{party.name}] PARTY_EMPTY - CLEANUP START.")
                     del self.parties[party.name]
-            logging.info(f"Closed conn handler - {username}@{addr}.")
+            logging.info(f"[CONNECTION_CLOSED] - {username}@{addr}.")
 
     async def _handle_join_request(self, websocket):
         """ Waits, parses and validate initial 'JOIN:'. Return (party, username) or (None, None)"""
         try:
             join_message = await websocket.recv()
         except websockets.exceptions.ConnectionClosed:
-            logging.error(f"Exception - {websocket}")
+            logging.error(f"[CONNECTION_CLOSED] - {websocket}")
             return None, None
         
         if not join_message.startswith("JOIN:"):
@@ -129,7 +129,7 @@ class Server:
 
         if party_name not in self.parties:
             self.parties[party_name] = Party(party_name, password)
-            logging.info(f"New party created: {party_name}")
+            logging.info(f"[{party_name}]: CREATE_PARTY")
         
         party = self.parties[party_name]
 
@@ -139,14 +139,13 @@ class Server:
 
         await websocket.send("JOIN_OK")
         await party.add_member(websocket, username)
-        logging.info(f"'{username}' successfully joined '{party_name}'.")
+        logging.info(f"[{party_name}]: JOIN_OK - {username}'")
 
         return party, username
 
     async def _process_commands(self, websocket, party, username):
         """Proccess incoming commands and routes it."""
         async for command in websocket:
-            logging.info(f"'{username}' - '{party.name}' | '{command}'")
             if command == "START":
                 await self._handle_start_command(websocket, party, username)
             else:
@@ -159,25 +158,23 @@ class Server:
             await self._send_error(websocket, "NOT_LEADER", party.name, username)
             return
         if party.timer_task and not party.timer_task.done():
-            await self._send_error(websocket, "TIMER_ALREADY_ACTIVE", party, username)
+            await self._send_error(websocket, "TIMER_ALREADY_ACTIVE", party.name, username)
             return
-
-        logging.info(f"'{username}' - '{party.name}' | 'START'")
+        logging.info(f"[{party.name}]: START - '{username}'")
         party.timer_task = asyncio.create_task(party.start_countdown())
-        websocket.send("COUNTDOWN")
 
     async def _send_error(self, websocket, error_code, party_name, username):
         """Sends error_code to Client"""
         try:
             await websocket.send(error_code)
-            logging.error(f"'{username}' - '{party_name}' | '{error_code}'")
+            logging.error(f"[{party_name}]: {error_code} - '{username}'")
         except websockets.exceptions.ConnectionClosed:
             pass # Client disconnected before receiving?
 
     async def start(self):
         """Starts the server."""
         async with websockets.serve(self.handle_client, self.host, self.port):
-            logging.debug(f"WebSocket at ws://{self.host}:{self.port}")
+            logging.debug(f"[WEBSOCKET]: ws://{self.host}:{self.port}")
             await asyncio.Future()
 
 def logging_setup():
@@ -203,4 +200,4 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logging.debug("Server shutting down.")
+        logging.debug("Shutting down.")
