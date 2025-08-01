@@ -1,7 +1,8 @@
 import sys
 import asyncio
 import threading
-import time
+import os
+import sys
 from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QVBoxLayout, QLineEdit, QTextEdit
 from PyQt6.QtCore import pyqtSignal, QObject
 import pygame
@@ -89,11 +90,20 @@ class ClientApp(QWidget):
         self.init_ui()
         self._init_hotkey()
 
+    def get_resource_path(self, relative_path):
+        """ Get absolute path to resource, attempt to unify "builds" for Win/Linux """
+        try:
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+        return os.path.join(base_path, relative_path)
+
     def _init_audio(self):
         """Audio Setup"""
         try:
             pygame.mixer.init()
-            self.alarm_sound = pygame.mixer.Sound(SOUND_FILE)
+            sound_path = self.get_resource_path(SOUND_FILE)
+            self.alarm_sound = pygame.mixer.Sound(sound_path)
         except pygame.error as e:
             self.alarm_sound = None
             self.setup_error(f"Audio error: {e}")
