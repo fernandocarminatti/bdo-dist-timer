@@ -37,7 +37,8 @@ a = Analysis(
     binaries=[],
     datas=[
         ('zbuff01.wav', '.'),
-        ('icon.ico', '.')
+        ('icon.ico', '.'),
+        ('style.qss', '.')
     ],
     hiddenimports=[],
     hookspath=[],

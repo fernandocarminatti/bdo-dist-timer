@@ -3,6 +3,7 @@ import asyncio
 import threading
 import os
 import sys
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QVBoxLayout, QLineEdit, QTextEdit
 from PyQt6.QtCore import pyqtSignal, QObject
 import pygame
@@ -88,6 +89,7 @@ class ClientApp(QWidget):
         self._init_audio()
         self._init_network_handler()
         self.init_ui()
+        self.load_stylesheet()
         self._init_hotkey()
 
     def get_resource_path(self, relative_path):
@@ -117,6 +119,7 @@ class ClientApp(QWidget):
     def init_ui(self):
         """UI Setup"""
         self.setWindowTitle('Olun Sync')
+        self.setWindowIcon(QIcon(self.get_resource_path("icon.ico")))
         layout = QVBoxLayout()
 
         self.username_input = QLineEdit("Username")
@@ -185,6 +188,8 @@ class ClientApp(QWidget):
                 self.log_status("Invalid command. Use JOIN:party:pass:user")
             case "INVALID_JOIN_FORMAT":
                 self.log_status("Invalid JOIN format. Use JOIN:party:pass:user")
+            case "INVALID_PARTY_NAMING":
+                self.log_status("Invalid PARTY name.")
             case "INCORRECT_PASSWORD":
                 self.log_status("Incorrect password.")
         
@@ -244,6 +249,14 @@ class ClientApp(QWidget):
     def closeEvent(self, event):
         self.network.disconnect()
         event.accept()
+
+    def load_stylesheet(self):
+        try:
+            qss_file_path = self.get_resource_path("style.qss")
+            with open(qss_file_path, 'r') as f:
+                self.setStyleSheet(f.read())
+        except Exception as e:
+            self.log_status("Could not load stylesheet.")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
