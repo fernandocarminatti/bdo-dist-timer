@@ -30,7 +30,10 @@ a = Analysis(
     ['client.py'],
     pathex=[],
     binaries=[],
-    datas=[('zbuff01.wav', '.')],
+    datas=[
+        ('zbuff01.wav', '.'),
+        ('icon.ico', '.')
+    ],
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
@@ -53,7 +56,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='client',
+    name='OlunSync',
     debug=False,
     bootloader_ignore_signals=False,
     strip=True,
@@ -61,5 +64,5 @@ exe = EXE(
     upx_dir=None,
     runtime_tmpdir=None,
     console=False,
-    icon=None
+    icon='icon.ico'
 )
