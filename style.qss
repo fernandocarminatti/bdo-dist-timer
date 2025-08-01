@@ -1,0 +1,47 @@
+QWidget {
+    background-color: rgba(17, 17, 17, 1);
+    color: rgba(231, 231, 231, 1);
+    font-family: Segoe UI, sans-serif;
+    font-size: 10pt;
+}
+
+QLineEdit, QTextEdit {
+    background-color: rgba(43, 43, 43, 1);
+    border: 1px solid rgba(133, 133, 133, 1);
+    border-radius: 6px;
+    padding: 6px;
+}
+
+QTextEdit {
+    min-height: 100px;
+}
+
+QPushButton {
+    background-color: rgba(43, 43, 43, 1);
+    border: 1px solid rgba(133, 133, 133, 1);
+    border-radius: 6px;
+    padding: 6px 12px;
+}
+
+QPushButton:hover {
+    background-color: rgba(63, 63, 63, 1);
+}
+
+QPushButton:pressed {
+    background-color: rgba(102, 102, 102, 1);
+}
+
+QLabel {
+    margin-bottom: 2px;
+}
+
+QLineEdit {
+    margin-top: 0px;
+    padding: 6px;
+}
+
+QLineEdit:disabled, QPushButton:disabled {
+    background-color: rgba(43, 43, 43, 1);
+    color: #888;
+    border-color: rgba(68, 68, 68, 1);
+}

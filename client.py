@@ -1,11 +1,14 @@
 import sys
-import socket
+import asyncio
 import threading
-import time
+import os
+import sys
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QVBoxLayout, QLineEdit, QTextEdit
 from PyQt6.QtCore import pyqtSignal, QObject
 import pygame
 import keyboard
+import websockets
 
 SOUND_FILE = "zbuff01.wav"
 
@@ -15,61 +18,63 @@ class NetworkHandler(QObject):
 
     def __init__(self):
         super().__init__()
-        self.sock = None
-        self.socket_lock = threading.Lock()
+        self.websocket = None
+        self.is_running = False
+        self.uri = ""
 
-    @property
-    def is_running(self):
-        """ Computed property for conn status. Socket is the source of truth"""
-        return self.sock is not None
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.run_async_loop, daemon=True)
+        self.thread.start()
+
+    def run_async_loop(self):
+        """Runs the async loop in a thread."""
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
 
     def connect(self, host, port, party, password, username):
         if self.is_running:
             return
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((host, port))
-            
-            with self.socket_lock:
-                self.sock = sock
+        self.uri = f"ws://{host}:{port}"
 
-            self.send(f"JOIN:{party}:{password}:{username}\n")
-            threading.Thread(target=self._listen, daemon=True).start()
-            self.connection_status.emit(True, "Connected successfully.")
+        asyncio.run_coroutine_threadsafe(
+            self._connect(party, password, username),
+            self.loop
+        )
+
+    async def _connect(self, party, password, username):
+        try:
+            async with websockets.connect(self.uri) as websocket:
+                self.websocket = websocket
+                self.is_running = True
+                self.connection_status.emit(True, "Connected successfully.")
+
+                await self.websocket.send(f"JOIN:{party}:{password}:{username}")
+
+                async for message in self.websocket:
+                    self.message_received.emit(message)
+
+        except (websockets.exceptions.ConnectionClose, ConnectionRefusedError) as e:
+            self.connection_status.emit(False, f"Connection closed: {e}")
         except Exception as e:
-            self.sock = None
             self.connection_status.emit(False, f"Connection error: {e}")
-
-    def _listen(self):
-        error_msg = "Connection lost."
-        try:
-            with self.sock.makefile('r') as f:
-                for message in f:
-                    self.message_received.emit(message.strip())
-        except (OSError, ConnectionAbortedError, ConnectionResetError):
-            error_msg = f"Connection closed: {e}"
-        except Exception as e:
-            error_msg = f"Network error: {e}"
         finally:
-            with self.socket_lock:
-                self.sock = None
-            self.connection_status.emit(False, error_msg)
+            self.is_running = False
+            self.websocket = None
+            self.connection_status.emit(False, "Disconnected.")
 
     def send(self, message):
-        with self.socket_lock:
-            if self.is_running:
-                try:
-                    self.sock.sendall(message.encode())
-                except OSError:
-                    pass # Thread should capture this and handle the disconnect.
+        if self.is_running and self.websocket:
+            asyncio.run_coroutine_threadsafe(
+                self.websocket.send(message),
+                self.loop
+            )
 
     def disconnect(self):
-        with self.socket_lock:
-            if self.is_running:
-                try:
-                    self.sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass # _listen() finally should handle cleanup.
+        if self.is_running and self.websocket:
+            asyncio.run_coroutine_threadsafe(
+                self.websocket.close(),
+                self.loop
+            )
 
 class ClientApp(QWidget):
     def __init__(self):
@@ -84,13 +89,23 @@ class ClientApp(QWidget):
         self._init_audio()
         self._init_network_handler()
         self.init_ui()
+        self.load_stylesheet()
         self._init_hotkey()
+
+    def get_resource_path(self, relative_path):
+        """ Get absolute path to resource, attempt to unify "builds" for Win/Linux """
+        try:
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+        return os.path.join(base_path, relative_path)
 
     def _init_audio(self):
         """Audio Setup"""
         try:
             pygame.mixer.init()
-            self.alarm_sound = pygame.mixer.Sound(SOUND_FILE)
+            sound_path = self.get_resource_path(SOUND_FILE)
+            self.alarm_sound = pygame.mixer.Sound(sound_path)
         except pygame.error as e:
             self.alarm_sound = None
             self.setup_error(f"Audio error: {e}")
@@ -104,6 +119,7 @@ class ClientApp(QWidget):
     def init_ui(self):
         """UI Setup"""
         self.setWindowTitle('Olun Sync')
+        self.setWindowIcon(QIcon(self.get_resource_path("icon.ico")))
         layout = QVBoxLayout()
 
         self.username_input = QLineEdit("Username")
@@ -153,32 +169,41 @@ class ClientApp(QWidget):
         command = parts[0]
         payload = parts[1] if len(parts) > 1 else ""
 
-        if command == "JOIN_OK":
-            self.log_status("Successfully joined party!")
-        elif command == "PARTY_UPDATE":
-            self._parse_party_update(payload)
-        elif command == "COUNTDOWN":
-            self.log_status("Leader has started the countdown!")
-        elif command == "PLAY_SOUND":
-            self.log_status("Z-Buff now!")
-            if self.alarm_sound:
-                self.alarm_sound.play()
-        elif command == "TIMER_ALREADY_ACTIVE":
-            self.log_status("Timer is already active!")
-        elif command == "NOT_LEADER":
-            self.log_status("You are not the party leader!")
-
+        match command:
+            case "JOIN_OK":
+                self.log_status("Successfully joined party!")
+            case "PARTY_UPDATE":
+                self._parse_party_update(payload)
+            case "COUNTDOWN":
+                self.log_status("Leader has started the countdown!")
+            case "PLAY_SOUND":
+                self.log_status("Z-Buff now!")
+                if self.alarm_sound:
+                    self.alarm_sound.play()
+            case "TIMER_ALREADY_ACTIVE":
+                self.log_status("Timer is already active!")
+            case "NOT_LEADER":
+                self.log_status("You are not the party leader!")
+            case "INVALID_COMMAND":
+                self.log_status("Invalid command. Use JOIN:party:pass:user")
+            case "INVALID_JOIN_FORMAT":
+                self.log_status("Invalid JOIN format. Use JOIN:party:pass:user")
+            case "INVALID_PARTY_NAMING":
+                self.log_status("Invalid PARTY name.")
+            case "INCORRECT_PASSWORD":
+                self.log_status("Incorrect password.")
+        
     def _parse_party_update(self, payload):
         """Parse party updates"""
-        self.party_members = payload.split(',') if payload else []
+        active_party, *self.party_members = payload.split(':')
         my_username = self.username_input.text()
         self.is_leader = bool(self.party_members and self.party_members[0] == my_username)
 
         if not self.party_members:
             self.log_status("Party is now empty.")
         else:
-            formatted = [f"{m} (Leader)" if i == 0 else m for i, m in enumerate(self.party_members)]
-            self.log_status(f"Party Update ({len(self.party_members)}): {', '.join(formatted)}")
+            output_message = f"[{active_party}]({len(self.party_members)}): {', '.join(self.party_members)}"
+            self.log_status(output_message)
             self._update_ui_state()
 
     def _update_ui_state(self):
@@ -196,7 +221,7 @@ class ClientApp(QWidget):
 
     def trigger_start_by_hotkey(self):
         if self.is_connected:
-            self.network.send("START\n")
+            self.network.send("START")
 
     def toggle_connection(self):
         """Handles connnect/disconnect button"""
@@ -224,6 +249,14 @@ class ClientApp(QWidget):
     def closeEvent(self, event):
         self.network.disconnect()
         event.accept()
+
+    def load_stylesheet(self):
+        try:
+            qss_file_path = self.get_resource_path("style.qss")
+            with open(qss_file_path, 'r') as f:
+                self.setStyleSheet(f.read())
+        except Exception as e:
+            self.log_status("Could not load stylesheet.")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

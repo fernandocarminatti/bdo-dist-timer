@@ -1,172 +1,203 @@
 import asyncio
 import argparse
-import time
+import websockets
+import logging
 
-COUNTDOWN_SECONDS = 2
-
-parties = {}
+COUNTDOWN_SECONDS = 5
 
 class Party:
+    """Representas a single party. Manages its own members and timer state."""
     def __init__(self, name, password):
         self.name = name
         self.password = password
         self.members = []
-        self.leader_writer = None
+        self.leader_websocket = None
         self.timer_task = None
 
     def get_member_list(self):
         """Return list of usernames for members of the party."""
-        return [uname for _,_, uname in self.members]
+        return [uname for _, uname in self.members]
     
-    def get_member_by_writer(self, writer):
-        """Return username of member with given writer."""
-        return next((m for m in self.members if m[1] is writer), None)
+    def get_member_by_websocket(self, websocket):
+        """Return username of member with given websocket connection."""
+        return next((m for m in self.members if m[0] is websocket), None)
 
-    async def add_member(self, reader, writer, username):
+    async def add_member(self, websocket, username):
         """Adds new member and broadcasts event."""
-        if self.get_member_by_writer(writer):
-            return
-        self.members.append((reader, writer, username))
-        print(f"[INFO]: '{username}' joined party '{self.name}'.")
-        if self.leader_writer is None:
-            self.leader_writer = writer
-            print(f"[INFO]: '{username}' is the new leader of party '{self.name}'.")
+        if self.get_member_by_websocket(websocket): return
+        self.members.append((websocket, username))
+        logging.info(f"[{self.name}]: JOIN_PARTY_OK - '{username}'")
+        if self.leader_websocket is None:
+            self.leader_websocket = websocket
+            logging.info(f"[{self.name}]: LEADER_PROMOTION - '{username}'")
         await self._broadcast_party_update()
     
-    async def remove_member(self, writer):
+    async def remove_member(self, websocket):
         """Removes member and handle leader promotion if needed."""
-        member_to_remove = self.get_member_by_writer(writer)
+        member_to_remove = self.get_member_by_websocket(websocket)
         if not member_to_remove:
             return # not found?!?
-        HOST = '0.0.0.0'
 
-        leaving_username = member_to_remove[2]
+        leaving_username = member_to_remove[1]
         self.members.remove(member_to_remove)
-        print(f"[INFO]: '{leaving_username}' left party '{self.name}'.")
+        logging.info(f"[{self.name}]: '{leaving_username}' left.")
 
         # Promote leader?!
-        if self.leader_writer is writer:
+        if self.leader_websocket is websocket:
             if self.members:
-                self.leader_writer = self.members[0][1]
+                self.leader_websocket = self.members[0][0]
+                new_leader_username = self.members[0][1]
+                logging.info(f"[{self.name}]: LEADER_PROMOTION - '{new_leader_username}'")
             else:
                 # empty party here
-                self.leader_writer = None
+                self.leader_websocket = None
         await self._broadcast_party_update()
         return not self.members
 
-    async def broadcast(self, message, exclude_writer=None):
+    async def broadcast(self, message, exclude_websocket=None):
         """Sends a message to all members of the party."""
-        message_bytes = message.encode()
-        for _, writer, _ in self.members:
-            if writer is not exclude_writer:
-                try:
-                    writer.write(message_bytes)
-                    await writer.drain()
-                except (ConnectionResetError, BrokenPipeError):
-                    pass # client likely disconnected ?? Main handle clean this up.
+        websockets_to_send = [ws for ws, _ in self.members if ws is not exclude_websocket]
+        if websockets_to_send:
+            websockets.broadcast(websockets_to_send, message)
 
     async def _broadcast_party_update(self):
         """Helper to handle party update broadcasts."""
         member_list = self.get_member_list()
-        message = f"PARTY_UPDATE:{','.join(member_list)}\n"
-        print(f"[PARTY - {self.name}]: Broadcasting Update: {message.strip()}")
+        message = f"PARTY_UPDATE:{self.name}:{':'.join(member_list)}"  
+        logging.info(f"[{self.name}]: PARTY_UPDATE - {", ".join(member_list)}")
         await self.broadcast(message)
 
     async def start_countdown(self):
         """Timer and broadcast events from countdown."""
-        print(f"[PARTY - {self.name}]: Starting countdown.")
-        await self.broadcast("COUNTDOWN\n")
+        logging.info(f"[{self.name}]: Starting countdown. Broadcasting COUNTDOWN.")
+        await self.broadcast("COUNTDOWN")
         await asyncio.sleep(COUNTDOWN_SECONDS)
-        print(f"[PARTY - {self.name}]: Countdown complete. Playing sound.")
-        await self.broadcast("PLAY_SOUND\n")
+        logging.info(f"[{self.name}]: Countdown complete. Broadcasting PLAY_SOUND.")
+        await self.broadcast("PLAY_SOUND")
 
-async def handle_client(reader, writer):
-    addr = writer.get_extra_info('peername')
-    print(f"[INFO]: New conn - {addr}")
-    
-    party = None
-    
-    try:
-        data = await reader.readline()
-        if not data: return
-        
-        message = data.decode().strip()
-        if not message.startswith("JOIN:"):
-            print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': INVALID_COMMAND")
-            writer.write("JOIN_FAIL: Invalid command. Use JOIN:party:pass:user\n".encode())
-            await writer.drain()
-            return
+class Server:
+    """Encapsulates the server logic."""
+
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.parties = {}
+
+    async def handle_client(self, websocket):
+        """Client connection Lifecycle"""
+        addr = websocket.remote_address
+        logging.info(f"[NEW_CONN] - {addr}")
+        party, username = None, None
 
         try:
-            _, party_name, password, username = message.split(":", 3)
-        except ValueError:
-            print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': INVALID_JOIN_FORMAT")
-            writer.write("JOIN_FAIL: Invalid JOIN format. Use JOIN:party:pass:user\n").encode()
-            await writer.drain()
-            return
-        
-        if party_name not in parties:
-            parties[party_name] = Party(party_name, password)
-            print(f"[INFO]: New party created: {party_name}")
+            party, username = await self._handle_join_request(websocket)
+            if not party:
+                return # On join fail, should already have responded.
+            await self._process_commands(websocket, party, username)
+        except websockets.exceptions.ConnectionClosed:
+            logging.error(f"[CONNECTION_CLOSED] - {username}@{addr}.")
+        except Exception as e:
+            logging.error(f"[UNEXPECTED_ERROR] - {username}@{addr}: {e}")
+        finally:
+            if party and websocket:
+                if await party.remove_member(websocket):
+                    logging.info(f"[{party.name}] PARTY_EMPTY - CLEANUP START.")
+                    del self.parties[party.name]
+            logging.info(f"[CONNECTION_CLOSED] - {username}@{addr}.")
 
-        party = parties[party_name]
+    async def _handle_join_request(self, websocket):
+        """ Waits, parses and validate initial 'JOIN:'. Return (party, username) or (None, None)"""
+        try:
+            join_message = await websocket.recv()
+        except websockets.exceptions.ConnectionClosed:
+            logging.error(f"[CONNECTION_CLOSED] - {websocket}")
+            return None, None
+        
+        if not join_message.startswith("JOIN:"):
+            await self._send_error(websocket, "INVALID_COMMAND")
+            return None, None
+        
+        try:
+            _, party_name, password, username  = join_message.split(":", 3)
+        except ValueError:
+            await self._send_error(websocket, "INVALID_JOIN_FORMAT", party_name, username)
+            return None, None
+        
+        if not party_name and len(party_name.strip()) < 1:
+            await self._send_error(websocket, "INVALID_PARTY_NAMING", party_name, username)
+            return None, None
+
+        if party_name not in self.parties:
+            self.parties[party_name] = Party(party_name, password)
+            logging.info(f"[{party_name}]: CREATE_PARTY")
+        
+        party = self.parties[party_name]
 
         if party.password != password:
-            print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': INCORRECT_PASSWORD")
-            writer.write("JOIN_FAIL: Incorrect password.\n".encode())
-            await writer.drain()
-            party = None
-            return
-        
-        await party.add_member(reader, writer, username)
-        writer.write("JOIN_OK\n".encode())
-        await writer.drain()
+            await self._send_error(websocket, "INCORRECT_PASSWORD", party_name, username)
+            return None, None
 
-        # Main command loop
-        while True:
-            data = await reader.readline()
-            if not data: break
-                
-            command = data.decode().strip()
-            print(f"[INFO]: '{username}' in '{party_name}': '{command}'")
+        await websocket.send("JOIN_OK")
+        await party.add_member(websocket, username)
+        logging.info(f"[{party_name}]: JOIN_OK - {username}'")
 
+        return party, username
+
+    async def _process_commands(self, websocket, party, username):
+        """Proccess incoming commands and routes it."""
+        async for command in websocket:
             if command == "START":
-                if party.leader_writer is writer:
-                    if party.timer_task and not party.timer_task.done():
-                        print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': TIMER_ALREADY_ACTIVE")
-                        writer.write("TIMER_ALREADY_ACTIVE: Timer is already active.\n".encode())
-                        await writer.drain()
-                    else:
-                        print(f"[INFO]: '{command}' - '{username}' in '{party_name}': TIMER_STARTED")
-                        party.timer_task = asyncio.create_task(party.start_countdown())
-                else:
-                    print(f"[ERROR]: '{command}' - '{username}' in '{party_name}': NOT_LEADER")
-                    writer.write("NOT_LEADER: Only party leader can start the timer.\n".encode())
-                    await writer.drain()
-    except (ConnectionResetError, asyncio.IncompleteReadError):
-        pass # Client disconnect unexpectedly. Finally handles cleanup.
-    finally:
-        if party:
-            is_empty = await party.remove_member(writer)
-            if is_empty:
-                print(f"[INFO]: Party '{party.name}' is now empty. Deleting.")
-                if party.name in parties:
-                    del parties[party.name]
-        writer.close()
-        await writer.wait_closed()
-        print(f"[INFO]: Closed conn - {username}@{addr}.")
+                await self._handle_start_command(websocket, party, username)
+            else:
+                await self._send_error(websocket, "UNKNOWN_COMMAND", party, username)
+                return
+    
+    async def _handle_start_command(self, websocket, party, username):
+        """Olun 275s Timer start command"""
+        if party.leader_websocket is not websocket:
+            await self._send_error(websocket, "NOT_LEADER", party.name, username)
+            return
+        if party.timer_task and not party.timer_task.done():
+            await self._send_error(websocket, "TIMER_ALREADY_ACTIVE", party.name, username)
+            return
+        logging.info(f"[{party.name}]: START - '{username}'")
+        party.timer_task = asyncio.create_task(party.start_countdown())
 
+    async def _send_error(self, websocket, error_code, party_name, username):
+        """Sends error_code to Client"""
+        try:
+            await websocket.send(error_code)
+            logging.error(f"[{party_name}]: {error_code} - '{username}'")
+        except websockets.exceptions.ConnectionClosed:
+            pass # Client disconnected before receiving?
+
+    async def start(self):
+        """Starts the server."""
+        async with websockets.serve(self.handle_client, self.host, self.port):
+            logging.debug(f"[WEBSOCKET]: ws://{self.host}:{self.port}")
+            await asyncio.Future()
+
+def logging_setup():
+    """Init Logging config."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
 async def main():
+    """Parse args and run server"""
     parser = argparse.ArgumentParser(description="BDO Dist Timer Server")
     parser.add_argument("--port", type=int, default=8888, help="Server port")
     parser.add_argument("--host", default="0.0.0.0", help="Server IP")
     args = parser.parse_args()
-    
-    server = await asyncio.start_server(handle_client, args.host, args.port)
-    print(f"[DEBUG]: Server at {args.host}:{args.port}")
-    async with server:
-        await server.serve_forever()
+    logging_setup()
+
+    server_instance = Server(host=args.host, port=args.port)
+    await server_instance.start()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.debug("Shutting down.")
