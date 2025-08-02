@@ -20,7 +20,8 @@ class NetworkHandler(QObject):
     def __init__(self):
         super().__init__()
         self.websocket = None
-        self.listener_task = None
+        self.is_running = False
+        self.uri = None
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.run_async_loop, daemon=True)
         self.thread.start()
@@ -29,78 +30,62 @@ class NetworkHandler(QObject):
         """Runs the async loop in a thread."""
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
-        
-    @property
-    def is_running(self):
-        return self.websocket is not None and self.websocket.open
-    
-    def _task_done_callback(self, future):
-        """This callback runs in the asyncio thread when a scheduled task finishes."""
-        try:
-            future.result()
-        except Exception as e:
-            error_message = f"Async Task Error: {type(e).__name__}: {e}"
-            print(f"[FATAL ASYNCIO ERROR] {error_message}")
-            if self.is_running:
-                self.is_running = False
-                self.websocket = None
-                self.connection_status.emit(False, error_message)
 
     def connect(self, host, port, party, password, username):
         if self.is_running: return
-        uri = f"wss://{host}:{port}"
-        asyncio.run_coroutine_threadsafe(
-            self._connect(uri, party, password, username),
+        
+        self.uri = f"wss://{host}:{port}"
+        future = asyncio.run_coroutine_threadsafe(
+            self._connect(party, password, username),
             self.loop
         )
 
-    async def _connect(self, uri, party, password, username):
-        """Connects, perform handshake for Upgrade connection and start listener task."""
+    async def _connect(self, party, password, username):
         try:
             ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-            websocket = await websockets.connect(uri, ssl=ssl_context)
             
-            await websocket.send(f"JOIN:{party}:{password}:{username}")
-            response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                
-            self.websocket = websocket
-            self.connection_status.emit(True, f"Connected - {uri}")
-            self.message_received.emit(response)
-
-            self.listener_task = asyncio.create_task(self._listen_for_messages())
-        except ssl.SSLError as e:
-            self.connection_status.emit(False, f"SSL ERROR: {e}")
-        except ConnectionRefusedError as e:
-            self.connection_status.emit(False, f"Connection refused: {e}")
-        except websockets.exceptions.ConnectionClosed:
-            self.connection_status.emit(False, f"Connection closed: {e}")
+            async with websockets.connect(self.uri, ssl=ssl_context) as websocket:
+                self.websocket = websocket
+                self.is_running = True
+                self.connection_status.emit(True, f"[INFO]: Connected - {self.uri}")
+                await self.websocket.send(f"JOIN:{party}:{password}:{username}")
+                response = await asyncio.wait_for(self.websocket.recv(), timeout=5.0)
+                if response != "JOIN_OK":
+                    self.connection_status.emit(False, f"[ERROR]: {response}")
+                    return
+                self.message_received.emit(response)
+                async for message in self.websocket:
+                    self.message_received.emit(message)
+        except asyncio.TimeoutError:
+            self.connection_status.emit(False, "[ERROR]: HANDSHAKE_FAILED")
+        except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError, ConnectionRefusedError) as e:
+            self.connection_status.emit(False, f"[ERROR]: CONNECTION_CLOSED")
         except Exception as e:
-            self.connection_status.emit(False, f"Connection error: {e}")
-
-
-    async def _listen_for_messages(self):
-        """Main message loop. Cancelled on Disconnect"""
-        try:
-            async for message in self.websocket:
-                self.message_received.emit(message)
-        except websockets.exceptions.ConnectionClosed:
-            self.connection_status.emit(False, f"[CONNECTION]: Listener Loop - CONN_CLOSE")
+            self.connection_status.emit(False, f"[ERROR]: CONNECTION_ERROR")
         finally:
+            self.is_running = False
             self.websocket = None
-            self.connection_status.emit(False, "Disconnected.")
+            self.connection_status.emit(False, "[INFO]: DISCONNECTED")
             
     def send(self, message):
-        if self.is_running:
-            asyncio.run_coroutine_threadsafe(
+        if self.is_running and self.websocket and self.websocket.state == websockets.protocol.State.OPEN:
+            future = asyncio.run_coroutine_threadsafe(
                 self.websocket.send(message),
                 self.loop
             )
+        else:
+            self.connection_status.emit(False, f"[INFO]: NOT_CONNECTED")
 
     def disconnect(self):
-        if self.listener_task:
-            self.loop.call_soon_threadsafe(self.listener_task.cancel)
+        if self.is_running and self.websocket and self.websocket.state == websockets.protocol.State.OPEN:
+            asyncio.run_coroutine_threadsafe(
+                self.websocket.close(),
+                self.loop
+            )
+        else:
+            self.connection_status.emit(False, f"[ERROR]: UNKNOWN_CONN_STATE")
 
 class ClientApp(QWidget):
     def __init__(self):
@@ -108,7 +93,7 @@ class ClientApp(QWidget):
 
         #State
         self.is_leader = False
-        self.is_connected = False
+        self._network_is_connected = False
         self.party_members = []
         
         #Audio
@@ -134,7 +119,7 @@ class ClientApp(QWidget):
             self.alarm_sound = pygame.mixer.Sound(sound_path)
         except pygame.error as e:
             self.alarm_sound = None
-            self.setup_error(f"Audio error: {e}")
+            self.setup_error(f"[ERROR]: AUDIO_ERROR - {e}")
 
     def _init_network_handler(self):
         """Network Setup"""
@@ -180,11 +165,11 @@ class ClientApp(QWidget):
         layout.addWidget(self.status_log)
         self.setLayout(layout)
 
-    def handle_connection_status(self, is_connected, message):
+    def handle_connection_status(self, is_connected_bool, message):
         """Handle connection status signals"""
-        self.is_connected = is_connected
+        self.is_connected = is_connected_bool
         self.log_status(message)
-        if not is_connected:
+        if not self.is_connected:
             self.is_leader = False
             self.party_members = []
         self._update_ui_state()
@@ -218,6 +203,8 @@ class ClientApp(QWidget):
                 self.log_status("Invalid PARTY name.")
             case "INCORRECT_PASSWORD":
                 self.log_status("Incorrect password.")
+            case _:
+                self.log_status(f"[UNKNOWN_COMMAND]: {msg}")
         
     def _parse_party_update(self, payload):
         """Parse party updates"""
@@ -237,6 +224,7 @@ class ClientApp(QWidget):
         self.connect_button.setText("Disconnect" if self.is_connected else "Connect")
         for widget in [self.username_input, self.ip_input, self.port_input, self.party_input, self.password_input]:
             widget.setEnabled(not self.is_connected)
+        self.send_event_button.setEnabled(self.is_connected)
 
     def _init_hotkey(self):
         try:
@@ -246,8 +234,12 @@ class ClientApp(QWidget):
             self.log_status(f"Warning: Could not register hotkey. May need admin rights. {e}")
 
     def trigger_start_by_hotkey(self):
-        if self.is_connected:
+        if self.is_connected and self.is_leader:
             self.network.send("START")
+        elif self.is_connected and not self.is_leader:
+            self.log_status("[ERROR]: NOT_LEADER")
+        else:
+            self.log_status("[ERROR]: NO_DEFINED_PARTY")
 
     def toggle_connection(self):
         """Handles connnect/disconnect button"""
@@ -263,14 +255,6 @@ class ClientApp(QWidget):
 
     def log_status(self, text):
         self.status_log.append(text)
-
-    def update_connection_status(self, is_connected):
-        self.connect_button.setText("Disconnect" if is_connected else "Connect")
-        for widget in [self.username_input, self.ip_input, self.port_input, self.party_input, self.password_input]:
-            widget.setEnabled(not is_connected)
-        if not is_connected:
-            self.is_leader = False
-            self.log_status("Disconnected.")
             
     def closeEvent(self, event):
         self.network.disconnect()

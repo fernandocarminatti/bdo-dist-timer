@@ -140,8 +140,9 @@ class Server:
             await self._send_error(websocket, "INCORRECT_PASSWORD", party_name, username)
             return None, None
 
-        await party.add_member(websocket, username)
+        await websocket.send("JOIN_OK")
         logging.info(f"[{party_name}]: JOIN_OK - {username}'")
+        await party.add_member(websocket, username)
 
         return party, username
 
