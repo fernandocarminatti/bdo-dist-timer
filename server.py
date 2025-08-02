@@ -140,7 +140,6 @@ class Server:
             await self._send_error(websocket, "INCORRECT_PASSWORD", party_name, username)
             return None, None
 
-        await websocket.send("JOIN_OK")
         await party.add_member(websocket, username)
         logging.info(f"[{party_name}]: JOIN_OK - {username}'")
 
@@ -151,6 +150,12 @@ class Server:
         async for command in websocket:
             if command == "START":
                 await self._handle_start_command(websocket, party, username)
+            elif command == "CLOSE_CONN":
+                try:
+                    logging.info(f"[{party.name}]: CLOSE_CONN - {username}")
+                except websockets.exceptions.ConnectionClosed:
+                    pass
+                break # Cleanup at finally block
             else:
                 await self._send_error(websocket, "UNKNOWN_COMMAND", party, username)
                 return
@@ -182,12 +187,12 @@ class Server:
         
         try:
             ssl_context.load_cert_chain(cert_path, key_path)
-            logging.debug(f"[CERT]: SSL Certificate loaded successfully from {cert_path}")
+            logging.info(f"[CERT]: SSL Certificate loaded successfully from {cert_path}")
         except FileNotFoundError:
             logging.error(f"[CERT]: SSL Certificate files ('cert.pem', 'key.pem') not found.")
             
-        async with websockets.serve(self.handle_client, self.host, self.port):
-            logging.debug(f"[WEBSOCKET]: wss://{self.host}:{self.port}")
+        async with websockets.serve(self.handle_client, self.host, self.port, ssl=ssl_context):
+            logging.info(f"[WEBSOCKET]: wss://{self.host}:{self.port}")
             await asyncio.Future()
 
 def resource_path(relative_path):

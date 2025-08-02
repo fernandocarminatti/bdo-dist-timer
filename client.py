@@ -20,9 +20,7 @@ class NetworkHandler(QObject):
     def __init__(self):
         super().__init__()
         self.websocket = None
-        self.is_running = False
-        self.uri = ""
-
+        self.listener_task = None
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.run_async_loop, daemon=True)
         self.thread.start()
@@ -31,60 +29,78 @@ class NetworkHandler(QObject):
         """Runs the async loop in a thread."""
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
+        
+    @property
+    def is_running(self):
+        return self.websocket is not None and self.websocket.open
+    
+    def _task_done_callback(self, future):
+        """This callback runs in the asyncio thread when a scheduled task finishes."""
+        try:
+            future.result()
+        except Exception as e:
+            error_message = f"Async Task Error: {type(e).__name__}: {e}"
+            print(f"[FATAL ASYNCIO ERROR] {error_message}")
+            if self.is_running:
+                self.is_running = False
+                self.websocket = None
+                self.connection_status.emit(False, error_message)
 
     def connect(self, host, port, party, password, username):
-        if self.is_running:
-            return
-        self.uri = f"wss://{host}:{port}"
-
+        if self.is_running: return
+        uri = f"wss://{host}:{port}"
         asyncio.run_coroutine_threadsafe(
-            self._connect(party, password, username),
+            self._connect(uri, party, password, username),
             self.loop
         )
 
-    async def _connect(self, party, password, username):
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_context.verify_mode = ssl.CERT_NONE
-        ssl_context.check_hostname = False
-        
+    async def _connect(self, uri, party, password, username):
+        """Connects, perform handshake for Upgrade connection and start listener task."""
         try:
-            async with websockets.connect(self.uri, ssl=ssl_context) as websocket:
-                self.websocket = websocket
-                self.is_running = True
-                self.connection_status.emit(True, "Connected successfully.")
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            websocket = await websockets.connect(uri, ssl=ssl_context)
+            
+            await websocket.send(f"JOIN:{party}:{password}:{username}")
+            response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                
+            self.websocket = websocket
+            self.connection_status.emit(True, f"Connected - {uri}")
+            self.message_received.emit(response)
 
-                await self.websocket.send(f"JOIN:{party}:{password}:{username}")
-
-                async for message in self.websocket:
-                    self.message_received.emit(message)
-        except ssl.SSLERROR as e:
+            self.listener_task = asyncio.create_task(self._listen_for_messages())
+        except ssl.SSLError as e:
             self.connection_status.emit(False, f"SSL ERROR: {e}")
-        except (websockets.exceptions.ConnectionClose, ConnectionRefusedError) as e:
+        except ConnectionRefusedError as e:
+            self.connection_status.emit(False, f"Connection refused: {e}")
+        except websockets.exceptions.ConnectionClosed:
             self.connection_status.emit(False, f"Connection closed: {e}")
         except Exception as e:
             self.connection_status.emit(False, f"Connection error: {e}")
+
+
+    async def _listen_for_messages(self):
+        """Main message loop. Cancelled on Disconnect"""
+        try:
+            async for message in self.websocket:
+                self.message_received.emit(message)
+        except websockets.exceptions.ConnectionClosed:
+            self.connection_status.emit(False, f"[CONNECTION]: Listener Loop - CONN_CLOSE")
         finally:
-            self.is_running = False
             self.websocket = None
             self.connection_status.emit(False, "Disconnected.")
-
+            
     def send(self, message):
-        if self.is_running and self.websocket:
+        if self.is_running:
             asyncio.run_coroutine_threadsafe(
                 self.websocket.send(message),
                 self.loop
             )
 
     def disconnect(self):
-        if self.is_running and self.websocket:
-            asyncio.run_coroutine_threadsafe(
-                self.send("CLOSE"),
-                self.loop
-            )
-            asyncio.run_coroutine_threadsafe(
-                self.websocket.close(),
-                self.loop
-            )
+        if self.listener_task:
+            self.loop.call_soon_threadsafe(self.listener_task.cancel)
 
 class ClientApp(QWidget):
     def __init__(self):
