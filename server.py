@@ -2,6 +2,9 @@ import asyncio
 import argparse
 import websockets
 import logging
+import os
+import sys
+import ssl
 
 COUNTDOWN_SECONDS = 5
 
@@ -173,9 +176,27 @@ class Server:
 
     async def start(self):
         """Starts the server."""
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        cert_path = resource_path('cert.pem')
+        key_path = resource_path('key.pem')
+        
+        try:
+            ssl_context.load_cert_chain(cert_path, key_path)
+            logging.debug(f"[CERT]: SSL Certificate loaded successfully from {cert_path}")
+        except FileNotFoundError:
+            logging.error(f"[CERT]: SSL Certificate files ('cert.pem', 'key.pem') not found.")
+            
         async with websockets.serve(self.handle_client, self.host, self.port):
-            logging.debug(f"[WEBSOCKET]: ws://{self.host}:{self.port}")
+            logging.debug(f"[WEBSOCKET]: wss://{self.host}:{self.port}")
             await asyncio.Future()
+
+def resource_path(relative_path):
+    """ Get absolute path to resource"""
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 def logging_setup():
     """Init Logging config."""

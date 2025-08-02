@@ -9,6 +9,7 @@ from PyQt6.QtCore import pyqtSignal, QObject
 import pygame
 import keyboard
 import websockets
+import ssl
 
 SOUND_FILE = "zbuff01.wav"
 
@@ -34,7 +35,7 @@ class NetworkHandler(QObject):
     def connect(self, host, port, party, password, username):
         if self.is_running:
             return
-        self.uri = f"ws://{host}:{port}"
+        self.uri = f"wss://{host}:{port}"
 
         asyncio.run_coroutine_threadsafe(
             self._connect(party, password, username),
@@ -42,8 +43,12 @@ class NetworkHandler(QObject):
         )
 
     async def _connect(self, party, password, username):
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context.verify_mode = ssl.CERT_NONE
+        ssl_context.check_hostname = False
+        
         try:
-            async with websockets.connect(self.uri) as websocket:
+            async with websockets.connect(self.uri, ssl=ssl_context) as websocket:
                 self.websocket = websocket
                 self.is_running = True
                 self.connection_status.emit(True, "Connected successfully.")
@@ -52,7 +57,8 @@ class NetworkHandler(QObject):
 
                 async for message in self.websocket:
                     self.message_received.emit(message)
-
+        except ssl.SSLERROR as e:
+            self.connection_status.emit(False, f"SSL ERROR: {e}")
         except (websockets.exceptions.ConnectionClose, ConnectionRefusedError) as e:
             self.connection_status.emit(False, f"Connection closed: {e}")
         except Exception as e:
@@ -71,6 +77,10 @@ class NetworkHandler(QObject):
 
     def disconnect(self):
         if self.is_running and self.websocket:
+            asyncio.run_coroutine_threadsafe(
+                self.send("CLOSE"),
+                self.loop
+            )
             asyncio.run_coroutine_threadsafe(
                 self.websocket.close(),
                 self.loop
