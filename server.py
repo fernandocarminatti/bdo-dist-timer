@@ -6,7 +6,7 @@ import os
 import sys
 import ssl
 
-COUNTDOWN_SECONDS = 5
+COUNTDOWN_SECONDS = 275
 
 class Party:
     """Representas a single party. Manages its own members and timer state."""
