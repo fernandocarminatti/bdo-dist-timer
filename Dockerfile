@@ -6,7 +6,7 @@ RUN pip install --no-cache-dir --prefix=/install websockets
 FROM python:3.12-alpine AS final
 WORKDIR /app
 COPY --from=builder /install /usr/local
-COPY server.py cert.pem key.pem .
+COPY server.py .
 
 EXPOSE 443
 CMD ["python", "server.py", "--host", "0.0.0.0", "--port", "443"]

@@ -6,8 +6,10 @@ import os
 import sys
 import ssl
 
-COUNTDOWN_SECONDS = 5
-FULL_ROTATION = 10
+ZBUFF_COUNTDOWN = 318
+HOW_MANY_CYCLES = 10
+TIME_ROTATION = 346
+TIME_DIFF_FROM_Z = TIME_ROTATION - ZBUFF_COUNTDOWN
 
 class Party:
     """Representas a single party. Manages its own members and timer state."""
@@ -73,23 +75,28 @@ class Party:
 
     async def start_countdown(self):
         """Timer and broadcast events from countdown."""
-        dumbDifference = FULL_ROTATION - COUNTDOWN_SECONDS
-        logging.info(f"[{self.name}]: Starting countdown. Broadcasting COUNTDOWN.")
         try:
-            await self.broadcast("COUNTDOWN")
-            await asyncio.sleep(COUNTDOWN_SECONDS)
-            logging.info(f"[{self.name}]: Countdown complete. Broadcasting PLAY_SOUND.")
-            await self.broadcast("PLAY_SOUND")
-            await asyncio.sleep(dumbDifference)
+            for cycle in range(1, HOW_MANY_CYCLES + 1):    
+                logging.info(f"[{self.name}]: Starting countdown cycle [{cycle}].")
+                await self.broadcast(f"COUNTDOWN:{cycle}")
+                await asyncio.sleep(ZBUFF_COUNTDOWN)
+                logging.info(f"[{self.name}]: Cycle {cycle}. Broadcasting PLAY_SOUND.")
+                await self.broadcast("PLAY_SOUND")
+                await asyncio.sleep(TIME_DIFF_FROM_Z)
+                logging.info(f"[{self.name}]: Cycle {cycle} completed.")
+                await self.broadcast(f"COUNTDOWN_CYCLE_COMPLETE:{cycle}")
         except asyncio.CancelledError:
+            logging.info(f"[{self.name}]: Countdown cancelled mid-cycle [{cycle}].")
             await self.broadcast("COUNTDOWN_CANCELLED")
 
 class Server:
     """Encapsulates the server logic."""
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, cert, key):
         self.host = host
         self.port = port
+        self.cert_path = cert
+        self.key_path = key
         self.parties = {}
 
     async def handle_client(self, websocket):
@@ -166,7 +173,6 @@ class Server:
                     pass
                 break # Cleanup at finally block
             else:
-                print(command)
                 await self._send_error(websocket, "UNKNOWN_COMMAND", party, username)
                 return
     
@@ -185,14 +191,10 @@ class Server:
         if party.leader_websocket is not websocket:
             await self._send_error(websocket, "NOT_LEADER", party.name, username)
             return
-
         if party.timer_task and not party.timer_task.done():
             logging.info(f"[{party.name}]: STOP - '{username}'")
             party.timer_task.cancel()
-            try:
-                await party.timer_task
-            except asyncio.CancelledError:
-                logging.info(f"[{party.name}]: Timer task stopped.")
+            await party.timer_task
         else:
             await self._send_error(websocket, "NO_ACTIVE_TIMER", party.name, username)
     
@@ -207,14 +209,14 @@ class Server:
     async def start(self):
         """Starts the server."""
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        cert_path = resource_path('cert.pem')
-        key_path = resource_path('key.pem')
+        resolved_cert_path = resource_path(self.cert_path)
+        resolved_key_path = resource_path(self.key_path)
         
         try:
-            ssl_context.load_cert_chain(cert_path, key_path)
-            logging.info(f"[CERT]: SSL Certificate loaded successfully from {cert_path}")
+            ssl_context.load_cert_chain(resolved_cert_path, resolved_key_path)
+            logging.info(f"[CERT]: SSL Certificate loaded successfully from {resolved_cert_path}")
         except FileNotFoundError:
-            logging.error(f"[CERT]: SSL Certificate files ('cert.pem', 'key.pem') not found.")
+            logging.error(f"[CERT]: SSL Certificate files ('{resolved_cert_path}', '{resolved_key_path}') not found.")
             
         async with websockets.serve(self.handle_client, self.host, self.port, ssl=ssl_context):
             logging.info(f"[WEBSOCKET]: wss://{self.host}:{self.port}")
@@ -241,10 +243,12 @@ async def main():
     parser = argparse.ArgumentParser(description="BDO Dist Timer Server")
     parser.add_argument("--port", type=int, default=8888, help="Server port")
     parser.add_argument("--host", default="0.0.0.0", help="Server IP")
+    parser.add_argument("--cert", required=True , help="SSL Certificate file path")
+    parser.add_argument("--key", required=True , help="SSL Key file path")
     args = parser.parse_args()
     logging_setup()
 
-    server_instance = Server(host=args.host, port=args.port)
+    server_instance = Server(host=args.host, port=args.port, cert=args.cert, key=args.key)
     await server_instance.start()
 
 if __name__ == '__main__':
