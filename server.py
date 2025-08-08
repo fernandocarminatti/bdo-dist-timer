@@ -6,7 +6,8 @@ import os
 import sys
 import ssl
 
-COUNTDOWN_SECONDS = 275
+COUNTDOWN_SECONDS = 5
+FULL_ROTATION = 10
 
 class Party:
     """Representas a single party. Manages its own members and timer state."""
@@ -72,11 +73,16 @@ class Party:
 
     async def start_countdown(self):
         """Timer and broadcast events from countdown."""
+        dumbDifference = FULL_ROTATION - COUNTDOWN_SECONDS
         logging.info(f"[{self.name}]: Starting countdown. Broadcasting COUNTDOWN.")
-        await self.broadcast("COUNTDOWN")
-        await asyncio.sleep(COUNTDOWN_SECONDS)
-        logging.info(f"[{self.name}]: Countdown complete. Broadcasting PLAY_SOUND.")
-        await self.broadcast("PLAY_SOUND")
+        try:
+            await self.broadcast("COUNTDOWN")
+            await asyncio.sleep(COUNTDOWN_SECONDS)
+            logging.info(f"[{self.name}]: Countdown complete. Broadcasting PLAY_SOUND.")
+            await self.broadcast("PLAY_SOUND")
+            await asyncio.sleep(dumbDifference)
+        except asyncio.CancelledError:
+            await self.broadcast("COUNTDOWN_CANCELLED")
 
 class Server:
     """Encapsulates the server logic."""
@@ -151,6 +157,8 @@ class Server:
         async for command in websocket:
             if command == "START":
                 await self._handle_start_command(websocket, party, username)
+            elif command == "STOP_TIMER_TASK":
+                await self._handle_stop_command(websocket, party, username)
             elif command == "CLOSE_CONN":
                 try:
                     logging.info(f"[{party.name}]: CLOSE_CONN - {username}")
@@ -158,6 +166,7 @@ class Server:
                     pass
                 break # Cleanup at finally block
             else:
+                print(command)
                 await self._send_error(websocket, "UNKNOWN_COMMAND", party, username)
                 return
     
@@ -172,6 +181,21 @@ class Server:
         logging.info(f"[{party.name}]: START - '{username}'")
         party.timer_task = asyncio.create_task(party.start_countdown())
 
+    async def _handle_stop_command(self, websocket, party, username):
+        if party.leader_websocket is not websocket:
+            await self._send_error(websocket, "NOT_LEADER", party.name, username)
+            return
+
+        if party.timer_task and not party.timer_task.done():
+            logging.info(f"[{party.name}]: STOP - '{username}'")
+            party.timer_task.cancel()
+            try:
+                await party.timer_task
+            except asyncio.CancelledError:
+                logging.info(f"[{party.name}]: Timer task stopped.")
+        else:
+            await self._send_error(websocket, "NO_ACTIVE_TIMER", party.name, username)
+    
     async def _send_error(self, websocket, error_code, party_name, username):
         """Sends error_code to Client"""
         try:

@@ -145,6 +145,9 @@ class ClientApp(QWidget):
 
         self.send_event_button = QPushButton("Send Event")
         self.send_event_button.clicked.connect(self.trigger_start_by_hotkey)
+        
+        self.cancel_event_button = QPushButton("Cancel Event")
+        self.cancel_event_button.clicked.connect(self.cancel_active_timer)
 
         self.status_log = QTextEdit()
         self.status_log.setReadOnly(True)
@@ -161,6 +164,7 @@ class ClientApp(QWidget):
         layout.addWidget(self.password_input)
         layout.addWidget(self.connect_button)
         layout.addWidget(self.send_event_button)
+        layout.addWidget(self.cancel_event_button)
         layout.addWidget(QLabel("Status Log:"))
         layout.addWidget(self.status_log)
         self.setLayout(layout)
@@ -187,6 +191,8 @@ class ClientApp(QWidget):
                 self._parse_party_update(payload)
             case "COUNTDOWN":
                 self.log_status("Leader has started the countdown!")
+            case "COUNTDOWN_CANCELLED":
+                self.log_status("Countdown Cancelled.")
             case "PLAY_SOUND":
                 self.log_status("Z-Buff now!")
                 if self.alarm_sound:
@@ -235,11 +241,20 @@ class ClientApp(QWidget):
 
     def trigger_start_by_hotkey(self):
         if self.is_connected and self.is_leader:
+            print("Sent Start")
             self.network.send("START")
         elif self.is_connected and not self.is_leader:
             self.log_status("[ERROR]: NOT_LEADER")
         else:
             self.log_status("[ERROR]: NO_DEFINED_PARTY")
+
+    def cancel_active_timer(self):
+        if self.is_connected and self.is_leader:
+            self.network.send("STOP_TIMER_TASK")
+        elif self.is_connected and not self.is_leader:
+            self.log_status("[ERROR]: NOT_LEADER")
+        else:
+            self.log_status("[ERROR]: NO_DEFINED_PARTY") 
 
     def toggle_connection(self):
         """Handles connnect/disconnect button"""
